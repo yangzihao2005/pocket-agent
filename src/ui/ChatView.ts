@@ -34,6 +34,8 @@ const MAX_AGENT_ROUNDS = 5;
 const MAX_CONTEXT_CHARS = 12_000;
 /** 注入上下文的选中文本上限 */
 const MAX_SELECTION_CHARS = 6_000;
+/** DOM 选区读取的防抖间隔（PDF 等非 Markdown 视图） */
+const SELECTION_DEBOUNCE_MS = 120;
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   "opencode-go": "OpenCode Go",
@@ -80,7 +82,7 @@ function isAbortError(error: unknown): boolean {
 /**
  * 核心聊天界面。
  *
- * 布局：顶栏（品牌 / Agent 开关 / 模型 / 新对话 / 历史）→ 消息流 → 底部输入区。
+ * 布局：单行顶栏（模型 / 新对话 / 历史 / 更多）→ 消息流 → 底部输入区。
  * 所有可点击控件触控高度不低于 44px，输入区贴底并留出安全区域。
  */
 export class ChatView extends ItemView {
@@ -92,8 +94,12 @@ export class ChatView extends ItemView {
   private attachNote = false;
   private agentMode = false;
   private selectionText = "";
+  private selectionFromEditor = false;
   private drawerOpen = false;
+  private menuOpen = false;
+  private chipsOpen = false;
   private lastMarkdownView: MarkdownView | null = null;
+  private selectionTimer: number | null = null;
 
   private mdComponents: Component[] = [];
   private animatedIds = new Set<string>();
@@ -101,19 +107,23 @@ export class ChatView extends ItemView {
   private streamingTextEl: HTMLElement | null = null;
   private streamingTypingEl: HTMLElement | null = null;
 
-  private brandSubEl!: HTMLElement;
   private modelSelectEl!: HTMLSelectElement;
-  private agentToggleEl!: HTMLButtonElement;
   private newChatBtnEl!: HTMLButtonElement;
   private historyBtnEl!: HTMLButtonElement;
+  private moreBtnEl!: HTMLButtonElement;
+  private menuWrapEl!: HTMLElement;
+  private menuEl!: HTMLElement;
+  private agentMenuEl!: HTMLButtonElement;
+  private noteMenuEl!: HTMLButtonElement;
   private messagesEl!: HTMLElement;
   private msgListEl!: HTMLElement;
   private noteToggleEl!: HTMLButtonElement;
   private selectionBtnEl!: HTMLButtonElement;
+  private chipsToggleEl!: HTMLButtonElement;
   private chipsEl!: HTMLElement;
+  private chipsTrackEl!: HTMLElement;
   private textareaEl!: HTMLTextAreaElement;
   private sendBtnEl!: HTMLButtonElement;
-  private hintEl!: HTMLElement;
   private drawerEl!: HTMLElement;
   private drawerPanelEl!: HTMLElement;
   private drawerListEl!: HTMLElement;
@@ -157,15 +167,17 @@ export class ChatView extends ItemView {
     }
 
     this.syncModelSelect();
-    this.renderAgentToggle();
-    this.refreshContextState();
     this.renderChips();
+    this.refreshContextState();
     this.renderMessages();
-    this.updateBrandSub();
     this.updateBusyUi();
   }
 
   async onClose(): Promise<void> {
+    if (this.selectionTimer !== null) {
+      window.clearTimeout(this.selectionTimer);
+      this.selectionTimer = null;
+    }
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -202,6 +214,7 @@ export class ChatView extends ItemView {
     const model = this.resolveActiveModel();
     this.session = createChatSession(model ? modelKey(model) : this.defaultModelId());
     this.selectionText = "";
+    this.selectionFromEditor = false;
     this.animatedIds.clear();
 
     if (this.textareaEl) {
@@ -210,8 +223,9 @@ export class ChatView extends ItemView {
     }
     this.syncModelSelect();
     this.renderMessages();
-    this.updateBrandSub();
     this.updateSelectionChip();
+    this.setMenu(false);
+    this.setChips(false);
     this.setDrawer(false);
     this.focusInput();
   }
@@ -229,6 +243,7 @@ export class ChatView extends ItemView {
       }
       this.adoptSession(loaded);
       this.selectionText = "";
+      this.selectionFromEditor = false;
       this.animatedIds.clear();
       if (this.textareaEl) {
         this.textareaEl.value = "";
@@ -236,8 +251,8 @@ export class ChatView extends ItemView {
       }
       this.syncModelSelect();
       this.renderMessages();
-      this.updateBrandSub();
       this.updateSelectionChip();
+      this.setMenu(false);
       this.setDrawer(false);
       new Notice(`已切换到「${loaded.title || "新对话"}」`);
     } catch (error) {
@@ -287,7 +302,6 @@ export class ChatView extends ItemView {
       }
       await this.persist();
       this.renderMessages();
-      this.updateBrandSub();
 
       await this.runAgentLoop(model, contextBlock, controller);
     } catch (error) {
@@ -498,48 +512,67 @@ export class ChatView extends ItemView {
 
     const shell = this.contentEl.createDiv({ cls: "pa-shell" });
 
-    // 顶栏
+    // 顶栏：模型 + 三个图标按钮，保持单行
     const topbar = shell.createDiv({ cls: "pa-topbar" });
 
-    const brandRow = topbar.createDiv({ cls: "pa-brand-row" });
-    const brand = brandRow.createDiv({ cls: "pa-brand" });
-    const brandMark = brand.createDiv({ cls: "pa-brand-mark", attr: { "aria-hidden": "true" } });
-    setIcon(brandMark, "message-square");
-    const brandText = brand.createDiv({ cls: "pa-brand-text" });
-    brandText.createDiv({ cls: "pa-brand-name", text: "PocketAgent" });
-    this.brandSubEl = brandText.createDiv({ cls: "pa-brand-sub", text: "新对话" });
-
-    this.agentToggleEl = brandRow.createEl("button", {
-      cls: "pa-agent-toggle",
-      attr: { type: "button", "aria-pressed": "false" },
-    });
-    this.agentToggleEl.addEventListener("click", () => void this.toggleAgentMode());
-
-    const controlsRow = topbar.createDiv({ cls: "pa-controls-row" });
-    const modelWrap = controlsRow.createDiv({ cls: "pa-model-wrap" });
+    const modelWrap = topbar.createDiv({ cls: "pa-model-wrap" });
     this.modelSelectEl = modelWrap.createEl("select", {
       cls: "pa-model-select",
       attr: { "aria-label": "选择模型" },
     });
     this.modelSelectEl.addEventListener("change", () => void this.changeModel(this.modelSelectEl.value));
 
-    const actions = controlsRow.createDiv({ cls: "pa-topbar-actions" });
+    const actions = topbar.createDiv({ cls: "pa-topbar-actions" });
 
     this.newChatBtnEl = actions.createEl("button", {
-      cls: "pa-btn",
-      attr: { type: "button", title: "保存当前对话并开始新对话", "aria-label": "新对话" },
+      cls: "pa-icon",
+      attr: { type: "button", title: "新对话", "aria-label": "新对话" },
     });
-    this.newChatBtnEl.createSpan({ cls: "pa-btn-icon", text: "➕" });
-    this.newChatBtnEl.createSpan({ cls: "pa-btn-text", text: "新对话" });
+    this.newChatBtnEl.createSpan({ cls: "pa-icon-glyph", text: "➕" });
     this.newChatBtnEl.addEventListener("click", () => void this.newSession());
 
     this.historyBtnEl = actions.createEl("button", {
-      cls: "pa-btn",
-      attr: { type: "button", title: "打开历史对话", "aria-label": "历史对话" },
+      cls: "pa-icon",
+      attr: { type: "button", title: "历史对话", "aria-label": "历史对话" },
     });
-    this.historyBtnEl.createSpan({ cls: "pa-btn-icon", text: "📂" });
-    this.historyBtnEl.createSpan({ cls: "pa-btn-text", text: "历史" });
+    this.historyBtnEl.createSpan({ cls: "pa-icon-glyph", text: "📂" });
     this.historyBtnEl.addEventListener("click", () => void this.openHistory());
+
+    // 更多菜单
+    this.menuWrapEl = actions.createDiv({ cls: "pa-menu-wrap" });
+    this.moreBtnEl = this.menuWrapEl.createEl("button", {
+      cls: "pa-icon",
+      attr: {
+        type: "button",
+        title: "更多",
+        "aria-label": "更多选项",
+        "aria-haspopup": "menu",
+        "aria-expanded": "false",
+      },
+    });
+    this.moreBtnEl.createSpan({ cls: "pa-icon-glyph", text: "⋯" });
+    this.moreBtnEl.addEventListener("click", () => this.setMenu(!this.menuOpen));
+
+    this.menuEl = this.menuWrapEl.createDiv({ cls: "pa-menu", attr: { role: "menu", "aria-hidden": "true" } });
+
+    this.agentMenuEl = this.menuEl.createEl("button", {
+      cls: "pa-menu-item",
+      attr: { type: "button", role: "menuitemcheckbox", "aria-checked": "false" },
+    });
+    this.agentMenuEl.addEventListener("click", () => void this.toggleAgentMode());
+
+    this.noteMenuEl = this.menuEl.createEl("button", {
+      cls: "pa-menu-item",
+      attr: { type: "button", role: "menuitemcheckbox", "aria-checked": "false" },
+    });
+    this.noteMenuEl.addEventListener("click", () => this.toggleAttachNote());
+
+    const settingsItem = this.menuEl.createEl("button", {
+      cls: "pa-menu-item",
+      text: "⚙️ 插件设置",
+      attr: { type: "button", role: "menuitem" },
+    });
+    settingsItem.addEventListener("click", () => this.openPluginSettings());
 
     // 消息流
     this.messagesEl = shell.createDiv({ cls: "pa-messages", attr: { role: "log", "aria-live": "polite" } });
@@ -548,22 +581,30 @@ export class ChatView extends ItemView {
     // 输入区
     const composer = shell.createDiv({ cls: "pa-composer" });
 
-    const contextRow = composer.createDiv({ cls: "pa-context" });
-    const contextLine = contextRow.createDiv({ cls: "pa-context-line" });
+    const contextLine = composer.createDiv({ cls: "pa-context" });
 
     this.noteToggleEl = contextLine.createEl("button", {
-      cls: "pa-toggle",
+      cls: "pa-ctx-btn",
       attr: { type: "button", "aria-pressed": "false" },
     });
+    this.noteToggleEl.setText("📄");
     this.noteToggleEl.addEventListener("click", () => this.toggleAttachNote());
 
     this.selectionBtnEl = contextLine.createEl("button", {
-      cls: "pa-toggle pa-toggle-selection is-hidden",
-      attr: { type: "button", title: "把选中的文字引用到输入框" },
+      cls: "pa-ctx-btn pa-ctx-selection is-hidden",
+      attr: { type: "button", title: "引用选中内容（填入输入框）" },
     });
     this.selectionBtnEl.addEventListener("click", () => this.quoteSelection());
 
-    this.chipsEl = contextRow.createDiv({ cls: "pa-chips", attr: { "aria-label": "快捷指令" } });
+    this.chipsToggleEl = contextLine.createEl("button", {
+      cls: "pa-ctx-btn pa-ctx-chips",
+      text: "✨",
+      attr: { type: "button", title: "快捷指令", "aria-expanded": "false" },
+    });
+    this.chipsToggleEl.addEventListener("click", () => this.setChips(!this.chipsOpen));
+
+    this.chipsEl = composer.createDiv({ cls: "pa-chips", attr: { "aria-label": "快捷指令", "aria-hidden": "true" } });
+    this.chipsTrackEl = this.chipsEl.createDiv({ cls: "pa-chips-track" });
 
     const inputRow = composer.createDiv({ cls: "pa-input-row" });
     this.textareaEl = inputRow.createEl("textarea", {
@@ -593,11 +634,6 @@ export class ChatView extends ItemView {
         return;
       }
       void this.sendMessage(this.textareaEl.value);
-    });
-
-    this.hintEl = composer.createDiv({
-      cls: "pa-hint",
-      text: Platform.isMobile || Platform.isTablet ? "点按发送按钮送出消息" : "Enter 发送 · Shift+Enter 换行",
     });
 
     // 历史抽屉
@@ -631,14 +667,32 @@ export class ChatView extends ItemView {
 
     this.registerEvent(
       this.app.workspace.on("editor-change", (editor) => {
-        this.setSelection(editor.getSelection() ?? "");
+        this.setSelection(editor.getSelection() ?? "", true);
       })
     );
 
+    // PDF 阅读器等非 Markdown 视图：Markdown 编辑器优先级更高，这里只做兜底
+    this.registerDomEvent(document, "selectionchange", () => {
+      if (this.selectionTimer !== null) window.clearTimeout(this.selectionTimer);
+      this.selectionTimer = window.setTimeout(() => {
+        this.selectionTimer = null;
+        this.syncSelectionFromDom();
+      }, SELECTION_DEBOUNCE_MS);
+    });
+
+    this.registerDomEvent(document, "pointerdown", (event: PointerEvent) => {
+      if (!this.menuOpen) return;
+      if (this.menuWrapEl?.contains(event.target as Node)) return;
+      this.setMenu(false);
+    });
+
     this.registerDomEvent(document, "keydown", (event: KeyboardEvent) => {
-      if (event.key === "Escape" && this.drawerOpen) {
-        this.setDrawer(false);
+      if (event.key !== "Escape") return;
+      if (this.menuOpen) {
+        this.setMenu(false);
+        return;
       }
+      if (this.drawerOpen) this.setDrawer(false);
     });
   }
 
@@ -711,13 +765,57 @@ export class ChatView extends ItemView {
     if (this.session.messages.length > 0) {
       await this.persist();
     }
-    this.updateBrandSub();
     new Notice(`已切换到 ${model.name || model.id}`);
+  }
+
+  private setMenu(open: boolean): void {
+    if (!this.menuEl) return;
+    this.menuOpen = open;
+    this.menuEl.toggleClass("is-open", open);
+    this.menuEl.setAttr("aria-hidden", String(!open));
+    if (this.moreBtnEl) {
+      this.moreBtnEl.setAttr("aria-expanded", String(open));
+      this.moreBtnEl.toggleClass("is-active", open);
+    }
+    if (open) this.renderMenuState();
+  }
+
+  private renderMenuState(): void {
+    if (!this.agentMenuEl || !this.noteMenuEl) return;
+
+    this.agentMenuEl.setText(`🤖 Agent 模式：${this.agentMode ? "开" : "关"}`);
+    this.agentMenuEl.toggleClass("is-on", this.agentMode);
+    this.agentMenuEl.setAttr("aria-checked", String(this.agentMode));
+    this.agentMenuEl.setAttr(
+      "title",
+      this.agentMode ? "AI 可以搜索、读取并提议修改你的笔记" : "开启后 AI 可以操作笔记库"
+    );
+
+    const file = this.getActiveNoteFile();
+    this.noteMenuEl.setText(`📄 附带当前笔记：${this.attachNote ? "开" : "关"}`);
+    this.noteMenuEl.toggleClass("is-on", this.attachNote && Boolean(file));
+    this.noteMenuEl.setAttr("aria-checked", String(this.attachNote));
+    this.noteMenuEl.setAttr("title", file ? `发送时会带上「${file.basename}」的正文` : this.noteUnavailableHint());
+  }
+
+  private openPluginSettings(): void {
+    this.setMenu(false);
+    try {
+      const app = this.app as unknown as { setting?: { openTabById?: (id: string) => void } };
+      if (typeof app.setting?.openTabById !== "function") {
+        new Notice("无法打开插件设置，请从「设置 → 第三方插件」进入。");
+        return;
+      }
+      app.setting.openTabById("pocket-agent");
+    } catch (error) {
+      console.error("PocketAgent: 打开设置失败", error);
+      new Notice("无法打开插件设置，请从「设置 → 第三方插件」进入。");
+    }
   }
 
   private async toggleAgentMode(): Promise<void> {
     this.agentMode = !this.agentMode;
-    this.renderAgentToggle();
+    this.renderMenuState();
     const settings = this.plugin.settings;
     if (settings) {
       settings.agentMode = this.agentMode;
@@ -730,34 +828,21 @@ export class ChatView extends ItemView {
     new Notice(this.agentMode ? "已开启笔记库 Agent 模式" : "已关闭笔记库 Agent 模式");
   }
 
-  private renderAgentToggle(): void {
-    if (!this.agentToggleEl) return;
-    this.agentToggleEl.setText(this.agentMode ? "🤖 Agent 开" : "🤖 Agent 关");
-    this.agentToggleEl.toggleClass("is-on", this.agentMode);
-    this.agentToggleEl.setAttr("aria-pressed", String(this.agentMode));
-    this.agentToggleEl.setAttr(
-      "title",
-      this.agentMode ? "AI 可以搜索、读取并提议修改你的笔记" : "开启后 AI 可以操作笔记库"
-    );
-  }
-
-  private updateBrandSub(): void {
-    if (!this.brandSubEl) return;
-    const title = this.session.title || "新对话";
-    const model = this.resolveActiveModel();
-    const label = model ? `${title} · ${model.name || model.id}` : title;
-    this.brandSubEl.setText(label);
-    this.brandSubEl.setAttr("title", label);
-  }
-
   // ─────────────────────────────────────────────
   // 上下文与快捷指令
   // ─────────────────────────────────────────────
 
   private refreshContextState(): void {
-    const view = this.getActiveNoteView();
-    this.setSelection(this.getSelectionFromView(view));
+    const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (active) {
+      // Markdown 编辑器优先，回到编辑器选区
+      this.setSelection(this.getSelectionFromView(active), true);
+    } else if (this.selectionFromEditor && this.isPdfActive()) {
+      // 从笔记切到 PDF 时不要沿用旧笔记里的选区
+      this.setSelection("", false);
+    }
     this.renderNoteToggle();
+    this.renderMenuState();
   }
 
   private getSelectionFromView(view: MarkdownView | null): string {
@@ -769,8 +854,18 @@ export class ChatView extends ItemView {
     }
   }
 
-  private setSelection(text: string): void {
+  /** 读取 DOM 选区（PDF 阅读器等非 Markdown 视图） */
+  private syncSelectionFromDom(): void {
+    // Markdown 编辑器优先，避免覆盖编辑器选区
+    if (this.app.workspace.getActiveViewOfType(MarkdownView)) return;
+    const text = (window.getSelection()?.toString() ?? "").trim();
+    if (!text) return;
+    this.setSelection(text, false);
+  }
+
+  private setSelection(text: string, fromEditor: boolean): void {
     const next = text.length > 0 ? text : "";
+    this.selectionFromEditor = fromEditor;
     if (next === this.selectionText) return;
     this.selectionText = next;
     this.updateSelectionChip();
@@ -782,12 +877,13 @@ export class ChatView extends ItemView {
     const count = text.replace(/\s+/g, "").length;
     if (count === 0) {
       this.selectionBtnEl.addClass("is-hidden");
-      this.selectionBtnEl.setAttr("disabled", "true");
+      this.selectionBtnEl.setAttr("aria-disabled", "true");
       return;
     }
     this.selectionBtnEl.removeClass("is-hidden");
-    this.selectionBtnEl.removeAttribute("disabled");
-    this.selectionBtnEl.setText(`✂️ 引用选中内容 (${count}字)`);
+    this.selectionBtnEl.setAttr("aria-disabled", "false");
+    this.selectionBtnEl.setText(`✂️ ${count}字`);
+    this.selectionBtnEl.setAttr("title", `引用选中内容（${count} 字，填入输入框）`);
   }
 
   private quoteSelection(): void {
@@ -804,40 +900,74 @@ export class ChatView extends ItemView {
   }
 
   private toggleAttachNote(): void {
-    this.attachNote = !this.attachNote;
-    this.renderNoteToggle();
-    const file = this.getActiveNoteFile();
-    if (this.attachNote && !file) {
-      new Notice("当前没有打开的 Markdown 笔记可以附带。");
+    if (this.attachNote) {
+      this.attachNote = false;
+    } else {
+      const file = this.getActiveNoteFile();
+      if (!file) {
+        new Notice(this.isPdfActive() ? "PDF 请选中文字后引用，暂不支持整份 PDF。" : "当前没有打开的 Markdown 笔记可以附带。");
+        return;
+      }
+      this.attachNote = true;
     }
+    this.renderNoteToggle();
+    this.renderMenuState();
+  }
+
+  private noteUnavailableHint(): string {
+    return this.isPdfActive() ? "PDF 请选中文字后引用，暂不支持整份 PDF" : "当前没有打开的 Markdown 笔记";
   }
 
   private renderNoteToggle(): void {
     if (!this.noteToggleEl) return;
     const file = this.getActiveNoteFile();
-    const state = this.attachNote ? "开" : "关";
-    this.noteToggleEl.setText(file ? `📄 附带当前笔记：${state} · ${file.basename}` : `📄 附带当前笔记：${state}`);
-    this.noteToggleEl.toggleClass("is-on", this.attachNote);
-    this.noteToggleEl.toggleClass("is-muted", !file);
-    this.noteToggleEl.setAttr("aria-pressed", String(this.attachNote));
-    this.noteToggleEl.setAttr(
-      "title",
-      file ? `发送时自动带上「${file.basename}」的标题和正文` : "当前没有打开的 Markdown 笔记"
-    );
+    const on = this.attachNote && Boolean(file);
+
+    this.noteToggleEl.toggleClass("is-on", on);
+    this.noteToggleEl.setAttr("aria-pressed", String(on));
+
+    if (file) {
+      this.noteToggleEl.setAttr("aria-disabled", "false");
+      this.noteToggleEl.removeClass("is-disabled");
+      this.noteToggleEl.setAttr("title", `附带当前笔记：${on ? "开" : "关"} · ${file.basename}`);
+      return;
+    }
+
+    // 用 aria-disabled 而不是 disabled：保留悬停提示，点击由 toggleAttachNote 拦下
+    this.noteToggleEl.setAttr("aria-disabled", "true");
+    this.noteToggleEl.addClass("is-disabled");
+    this.noteToggleEl.setAttr("title", this.noteUnavailableHint());
+  }
+
+  private setChips(open: boolean): void {
+    if (!this.chipsEl) return;
+    this.chipsOpen = open;
+    this.chipsEl.toggleClass("is-open", open);
+    this.chipsEl.setAttr("aria-hidden", String(!open));
+    if (this.chipsToggleEl) {
+      this.chipsToggleEl.setAttr("aria-expanded", String(open));
+      this.chipsToggleEl.toggleClass("is-on", open);
+    }
   }
 
   private renderChips(): void {
-    if (!this.chipsEl) return;
-    this.chipsEl.empty();
+    if (!this.chipsTrackEl) return;
+    this.chipsTrackEl.empty();
     const prompts = this.plugin.settings?.quickPrompts ?? [];
+
     if (prompts.length === 0) {
       this.chipsEl.addClass("is-empty");
+      this.chipsToggleEl?.addClass("is-hidden");
+      this.setChips(false);
       return;
     }
+
     this.chipsEl.removeClass("is-empty");
+    this.chipsToggleEl?.removeClass("is-hidden");
+    this.setChips(false);
 
     for (const prompt of prompts) {
-      const chip = this.chipsEl.createEl("button", {
+      const chip = this.chipsTrackEl.createEl("button", {
         cls: "pa-chip",
         text: prompt.label || "快捷指令",
         attr: { type: "button" },
@@ -874,6 +1004,7 @@ export class ChatView extends ItemView {
       new Notice("这条快捷指令没有可发送的内容。");
       return;
     }
+    this.setChips(false);
     await this.sendMessage(finalText);
   }
 
@@ -905,16 +1036,11 @@ export class ChatView extends ItemView {
 
   private renderEmptyState(): void {
     const empty = this.msgListEl.createDiv({ cls: "pa-empty" });
-    empty.createDiv({ cls: "pa-empty-mark", attr: { "aria-hidden": "true" }, text: "◈" });
-    empty.createDiv({ cls: "pa-empty-title", text: "说点什么，或者交给 Agent" });
+    empty.createDiv({ cls: "pa-empty-title", text: "问点什么" });
     empty.createDiv({
       cls: "pa-empty-desc",
-      text: "对话会保存在本地笔记库里，随时可以翻回去继续。",
+      text: "选中文字或打开笔记后提问；PDF 里选中的文字也可以引用。",
     });
-    const hints = empty.createDiv({ cls: "pa-empty-hints" });
-    hints.createDiv({ cls: "pa-empty-hint", text: "📄 打开「附带当前笔记」，就能直接针对这篇笔记提问。" });
-    hints.createDiv({ cls: "pa-empty-hint", text: "✂️ 在编辑器里选中一段文字，这里会出现引用按钮。" });
-    hints.createDiv({ cls: "pa-empty-hint", text: "🤖 开启 Agent 模式，AI 可以搜索、读取并提议修改笔记。" });
   }
 
   private renderMessage(message: ChatMessage): void {
@@ -999,22 +1125,22 @@ export class ChatView extends ItemView {
 
     const copyButton = bar.createEl("button", {
       cls: "pa-action",
-      text: "📋 复制",
-      attr: { type: "button" },
+      text: "📋",
+      attr: { type: "button", title: "复制", "aria-label": "复制回复" },
     });
     copyButton.addEventListener("click", () => void this.copyMessage(message));
 
     const insertButton = bar.createEl("button", {
       cls: "pa-action",
-      text: "📥 插入光标处",
-      attr: { type: "button", title: "写入当前笔记的光标位置，失败时追加到末尾" },
+      text: "📥",
+      attr: { type: "button", title: "插入光标处（失败时追加到末尾）", "aria-label": "插入到笔记光标处" },
     });
     insertButton.addEventListener("click", () => void this.insertMessage(message));
 
     const saveButton = bar.createEl("button", {
       cls: "pa-action",
-      text: "➕ 存为新笔记",
-      attr: { type: "button", title: "保存为收集箱里的新笔记" },
+      text: "➕",
+      attr: { type: "button", title: "存为新笔记", "aria-label": "存为新笔记" },
     });
     saveButton.addEventListener("click", () => void this.saveAsNote(message));
   }
@@ -1167,6 +1293,7 @@ export class ChatView extends ItemView {
   }
 
   private async openHistory(): Promise<void> {
+    this.setMenu(false);
     this.setDrawer(true);
     this.drawerListEl.empty();
     this.drawerListEl.createDiv({ cls: "pa-drawer-loading", text: "正在读取历史…" });
@@ -1222,10 +1349,10 @@ export class ChatView extends ItemView {
         const model = this.resolveActiveModel();
         this.session = createChatSession(model ? modelKey(model) : this.defaultModelId());
         this.selectionText = "";
+        this.selectionFromEditor = false;
         this.animatedIds.clear();
         this.syncModelSelect();
         this.renderMessages();
-        this.updateBrandSub();
         this.updateSelectionChip();
       }
     } catch (error) {
@@ -1249,15 +1376,6 @@ export class ChatView extends ItemView {
     this.sendBtnEl.setText(this.busy ? "停止" : "发送");
     this.sendBtnEl.toggleClass("is-busy", this.busy);
     this.sendBtnEl.setAttr("aria-label", this.busy ? "停止生成" : "发送消息");
-    if (this.hintEl) {
-      this.hintEl.setText(
-        this.busy
-          ? "正在生成… 点按「停止」可以中断"
-          : Platform.isMobile || Platform.isTablet
-            ? "点按发送按钮送出消息"
-            : "Enter 发送 · Shift+Enter 换行"
-      );
-    }
   }
 
   private scrollToBottom(force: boolean): void {
@@ -1320,11 +1438,21 @@ export class ChatView extends ItemView {
     return null;
   }
 
+  /** 只有 Markdown 笔记可以整份附带；PDF 等非 Markdown 文件返回 null */
   private getActiveNoteFile(): TFile | null {
+    const active = this.app.workspace.getActiveFile();
+    if (active && active.extension.toLowerCase() !== "md") return null;
+
     const view = this.getActiveNoteView();
     if (view?.file) return view.file;
-    const file = this.app.workspace.getActiveFile();
-    return file && file.extension === "md" ? file : null;
+    return active && active.extension.toLowerCase() === "md" ? active : null;
+  }
+
+  private isPdfActive(): boolean {
+    const active = this.app.workspace.getActiveFile();
+    if (active) return active.extension.toLowerCase() === "pdf";
+    const type = this.app.workspace.activeLeaf?.view?.getViewType?.() ?? "";
+    return type === "pdf" || type.startsWith("pdf-");
   }
 
   private rememberMarkdownView(): void {

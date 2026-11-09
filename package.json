@@ -1,6 +1,6 @@
 {
   "name": "pocket-agent",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Mobile-first AI chat and vault agent plugin for Obsidian with native OpenCode Go support.",
   "main": "main.js",
   "type": "module",

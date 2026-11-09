@@ -132,14 +132,20 @@ export class PocketAgentSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "PocketAgent 设置" });
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "移动端优先的 AI 对话与笔记 Agent 插件。所有密钥仅保存在本地插件数据中。",
+      text: "密钥仅保存在本地。常用项默认展开，其余按需点开。",
     });
 
-    this.renderOpenCodeSection();
-    this.renderDeepSeekSection();
-    this.renderModelAndPromptSection();
-    this.renderQuickPromptSection();
-    this.renderSessionSection();
+    const connectionEl = this.createDetails(containerEl, "连接", true, "pocket-agent-settings-group");
+    this.renderConnectionSection(connectionEl);
+
+    const modelEl = this.createDetails(containerEl, "模型", true, "pocket-agent-settings-group");
+    this.renderModelSection(modelEl);
+
+    const chatEl = this.createDetails(containerEl, "对话", true, "pocket-agent-settings-group");
+    this.renderChatSection(chatEl);
+
+    const storageEl = this.createDetails(containerEl, "存储与 Agent", false, "pocket-agent-settings-group");
+    this.renderStorageSection(storageEl);
   }
 
   /** 保存设置（统一入口） */
@@ -147,24 +153,30 @@ export class PocketAgentSettingTab extends PluginSettingTab {
     await this.plugin.saveSettings();
   }
 
-  private addSectionHeading(title: string, description?: string): void {
-    new Setting(this.containerEl).setName(title).setHeading();
-    if (description) {
-      this.containerEl.createEl("p", { cls: "setting-item-description", text: description });
-    }
+  /** 创建折叠分组，返回其内容容器 */
+  private createDetails(
+    parentEl: HTMLElement,
+    title: string,
+    open: boolean,
+    cls: string
+  ): HTMLDivElement {
+    const details = parentEl.createEl("details", { cls });
+    details.open = open;
+    details.createEl("summary", { cls: `${cls}-title`, text: title });
+    return details.createDiv({ cls: `${cls}-body` });
   }
 
-  /** 1) OpenCode Go 专区 */
-  private renderOpenCodeSection(): void {
+  /** 1) 连接：服务商密钥与地址 */
+  private renderConnectionSection(parentEl: HTMLElement): void {
     const settings = this.plugin.settings;
-    this.addSectionHeading(
-      "OpenCode Go",
-      "默认模型已按 2026-11 模型目录更新（deepseek-chat / deepseek-reasoner 等旧模型已于 2026-07-24 下线）。若仍返回 HTTP 400，请点击“获取模型列表”同步服务端最新目录。OpenCode Go 使用原生 ses_ 会话头，移动端推荐 requestUrl 免跨域直连。"
-    );
 
-    new Setting(this.containerEl)
+    parentEl.createEl("p", { cls: "setting-item-description", text: "密钥仅保存在本地。" });
+
+    new Setting(parentEl).setName("OpenCode Go").setHeading();
+
+    new Setting(parentEl)
       .setName("API Key")
-      .setDesc("OpenCode Go 访问密钥，留空则无法发起请求。")
+      .setDesc("留空则无法请求。")
       .addText((text) => {
         text.inputEl.type = "password";
         text
@@ -176,9 +188,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("Base URL")
-      .setDesc("默认 https://opencode.ai/zen/go/v1，末尾无需斜杠。")
+      .setDesc("默认 https://opencode.ai/zen/go/v1")
       .addText((text) =>
         text
           .setPlaceholder("https://opencode.ai/zen/go/v1")
@@ -189,11 +201,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("请求模式")
-      .setDesc(
-        "requestUrl 免跨域直连：使用 Obsidian 原生请求，移动端最稳定；fetch 流式输出：逐字显示回复，但要求接口允许跨域，网络层失败时会自动降级为 requestUrl。"
-      )
+      .setDesc("requestUrl 直连更稳；fetch 支持流式，失败会自动降级。")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("requestUrl", "requestUrl 免跨域直连")
@@ -205,20 +215,15 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           })
       );
 
-    this.renderModelList(settings.opencodeModels, "opencode-go", "OpenCode Go");
-  }
+    new Setting(parentEl).setName("DeepSeek / 自定义 OpenAI").setHeading();
+    parentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "默认 https://api.deepseek.com/v1（保留 /v1 兼容路径）。",
+    });
 
-  /** 2) DeepSeek / 自定义 OpenAI 专区 */
-  private renderDeepSeekSection(): void {
-    const settings = this.plugin.settings;
-    this.addSectionHeading(
-      "DeepSeek / 自定义 OpenAI",
-      "默认 Base URL 保留 /v1 兼容路径（https://api.deepseek.com/v1）；兼容 OpenAI 接口的第三方服务也可填入自定义 Base URL。"
-    );
-
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("API Key")
-      .setDesc("DeepSeek 或自定义 OpenAI 兼容服务的访问密钥。")
+      .setDesc("OpenAI 兼容服务同样适用。")
       .addText((text) => {
         text.inputEl.type = "password";
         text
@@ -230,9 +235,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("Base URL")
-      .setDesc("默认 https://api.deepseek.com/v1，末尾无需斜杠。")
+      .setDesc("默认 https://api.deepseek.com/v1")
       .addText((text) =>
         text
           .setPlaceholder("https://api.deepseek.com/v1")
@@ -242,23 +247,82 @@ export class PocketAgentSettingTab extends PluginSettingTab {
             await this.persist();
           })
       );
-
-    this.renderModelList(settings.deepseekModels, "deepseek", "DeepSeek");
   }
 
-  /** 模型列表管理：id / 名称 / 协议 / 启用 / 删除 */
-  private renderModelList(models: ModelConfig[], provider: ProviderId, providerLabel: string): void {
-    const container = this.containerEl.createDiv({ cls: "pocket-agent-model-list" });
-    new Setting(container)
-      .setName(`${providerLabel} 模型列表`)
-      .setDesc("至少保留一个启用的模型，聊天窗口顶部会列出所有启用模型。");
+  /** 2) 模型：默认选择 + 各服务商模型列表 */
+  private renderModelSection(parentEl: HTMLElement): void {
+    const settings = this.plugin.settings;
+    const enabledModels = this.plugin.getAllModels();
+
+    new Setting(parentEl)
+      .setName("默认模型")
+      .setDesc("可在聊天窗口顶部随时切换。")
+      .addDropdown((dropdown) => {
+        enabledModels.forEach((model) => {
+          const key = `${model.provider}:${model.id}`;
+          dropdown.addOption(
+            key,
+            `${model.name || model.id}（${model.provider === "opencode-go" ? "OpenCode Go" : "DeepSeek"}）`
+          );
+        });
+
+        const current = settings.selectedModelId;
+        const currentKnown = enabledModels.some((model) => `${model.provider}:${model.id}` === current);
+        if (current && !currentKnown) {
+          dropdown.addOption(current, `${current}（当前未启用）`);
+        }
+        if (!current && enabledModels.length === 0) {
+          dropdown.addOption("", "暂无可用模型，请先启用");
+        }
+
+        const fallback = enabledModels.length > 0 ? `${enabledModels[0].provider}:${enabledModels[0].id}` : "";
+        dropdown.setValue(current || fallback).onChange(async (value) => {
+          settings.selectedModelId = value;
+          await this.persist();
+        });
+      });
+
+    const opencodeModels = settings.opencodeModels;
+    const opencodeEl = this.createDetails(
+      parentEl,
+      `OpenCode Go 模型（${opencodeModels.length}）`,
+      false,
+      "pocket-agent-settings-subgroup"
+    );
+    this.renderModelList(opencodeModels, "opencode-go", "OpenCode Go", opencodeEl);
+
+    const deepseekModels = settings.deepseekModels;
+    const deepseekEl = this.createDetails(
+      parentEl,
+      `DeepSeek 模型（${deepseekModels.length}）`,
+      false,
+      "pocket-agent-settings-subgroup"
+    );
+    this.renderModelList(deepseekModels, "deepseek", "DeepSeek", deepseekEl);
+  }
+
+  /** 模型列表管理：id / 名称 / 协议 / 启用 / 发送 temperature / 删除 */
+  private renderModelList(
+    models: ModelConfig[],
+    provider: ProviderId,
+    providerLabel: string,
+    parentEl: HTMLElement
+  ): void {
+    const container = parentEl.createDiv({ cls: "pocket-agent-model-list" });
+
+    if (models.length === 0) {
+      container.createEl("p", {
+        cls: "setting-item-description",
+        text: `${providerLabel} 暂无模型，可添加或从服务端获取。`,
+      });
+    }
 
     models.forEach((model, index) => {
       const card = container.createDiv({ cls: "pocket-agent-model-card" });
 
       new Setting(card)
         .setName(model.name || model.id || `模型 ${index + 1}`)
-        .setDesc(`ID：${model.id || "未填写"}　状态：${model.enabled ? "已启用" : "已停用"}`)
+        .setDesc(model.id ? `ID：${model.id}` : "未填写 ID")
         .addToggle((toggle) =>
           toggle
             .setValue(model.enabled)
@@ -280,49 +344,40 @@ export class PocketAgentSettingTab extends PluginSettingTab {
             })
         );
 
-      new Setting(card)
-        .setName("模型 ID")
-        .setDesc("发送给服务端的 model 字段。")
-        .addText((text) =>
-          text
-            .setPlaceholder("deepseek-v4.1-flash")
-            .setValue(model.id)
-            .onChange(async (value) => {
-              model.id = value.trim();
-              await this.persist();
-            })
-        );
-
-      new Setting(card)
-        .setName("显示名称")
-        .setDesc("聊天窗口模型下拉中的展示文字。")
-        .addText((text) =>
-          text
-            .setPlaceholder("DeepSeek V4.1 Flash")
-            .setValue(model.name)
-            .onChange(async (value) => {
-              model.name = value;
-              await this.persist();
-            })
-        );
-
-      new Setting(card)
-        .setName("协议类型")
-        .setDesc("不同协议对应不同端点与请求体格式。")
-        .addDropdown((dropdown) => {
-          (Object.keys(PROTOCOL_LABELS) as ProtocolType[]).forEach((protocol) => {
-            dropdown.addOption(protocol, PROTOCOL_LABELS[protocol]);
-          });
-          dropdown.setValue(model.protocol).onChange(async (value) => {
-            model.protocol = toProtocol(value);
+      new Setting(card).setName("模型 ID").addText((text) =>
+        text
+          .setPlaceholder("deepseek-v4.1-flash")
+          .setValue(model.id)
+          .onChange(async (value) => {
+            model.id = value.trim();
             await this.persist();
-            this.display();
-          });
+          })
+      );
+
+      new Setting(card).setName("名称").addText((text) =>
+        text
+          .setPlaceholder("DeepSeek V4.1 Flash")
+          .setValue(model.name)
+          .onChange(async (value) => {
+            model.name = value;
+            await this.persist();
+          })
+      );
+
+      new Setting(card).setName("协议").addDropdown((dropdown) => {
+        (Object.keys(PROTOCOL_LABELS) as ProtocolType[]).forEach((protocol) => {
+          dropdown.addOption(protocol, PROTOCOL_LABELS[protocol]);
         });
+        dropdown.setValue(model.protocol).onChange(async (value) => {
+          model.protocol = toProtocol(value);
+          await this.persist();
+          this.display();
+        });
+      });
 
       new Setting(card)
         .setName("发送 temperature")
-        .setDesc("关闭后请求体不携带 temperature；部分 Claude / Kimi / GPT Luna 模型强制要求关闭。")
+        .setDesc("关闭后不发送该参数（Claude / Kimi / GPT Luna 等需关闭）。")
         .addToggle((toggle) =>
           toggle.setValue(model.supportsTemperature !== false).onChange(async (value) => {
             model.supportsTemperature = value;
@@ -331,9 +386,7 @@ export class PocketAgentSettingTab extends PluginSettingTab {
         );
     });
 
-    const actions = new Setting(container)
-      .setName("模型列表操作")
-      .setDesc("可从服务端同步模型目录，或一键恢复推荐的默认模型列表。");
+    const actions = new Setting(container);
     actions.addButton((button) =>
       button
         .setButtonText("添加模型")
@@ -431,43 +484,15 @@ export class PocketAgentSettingTab extends PluginSettingTab {
     this.display();
   }
 
-  /** 3) 模型与提示词 */
-  private renderModelAndPromptSection(): void {
+  /** 3) 对话：系统提示词 + 快捷指令 + 高级参数 */
+  private renderChatSection(parentEl: HTMLElement): void {
     const settings = this.plugin.settings;
-    this.addSectionHeading("模型与提示词", "默认模型与全局系统提示词，对新的对话立即生效。");
 
-    const enabledModels = this.plugin.getAllModels();
-
-    new Setting(this.containerEl)
-      .setName("默认模型")
-      .setDesc("新建对话时默认使用，可在聊天窗口顶部随时切换。")
-      .addDropdown((dropdown) => {
-        enabledModels.forEach((model) => {
-          const key = `${model.provider}:${model.id}`;
-          dropdown.addOption(key, `${model.name || model.id}（${model.provider === "opencode-go" ? "OpenCode Go" : "DeepSeek"}）`);
-        });
-
-        const current = settings.selectedModelId;
-        const currentKnown = enabledModels.some((model) => `${model.provider}:${model.id}` === current);
-        if (current && !currentKnown) {
-          dropdown.addOption(current, `${current}（当前未启用）`);
-        }
-        if (!current && enabledModels.length === 0) {
-          dropdown.addOption("", "暂无可用模型，请先在下方启用");
-        }
-
-        const fallback = enabledModels.length > 0 ? `${enabledModels[0].provider}:${enabledModels[0].id}` : "";
-        dropdown.setValue(current || fallback).onChange(async (value) => {
-          settings.selectedModelId = value;
-          await this.persist();
-        });
-      });
-
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("全局系统提示词")
-      .setDesc("定义 AI 的角色、语言与回复风格，会随每次请求发送。")
+      .setDesc("随每次请求发送。")
       .addTextArea((area) => {
-        area.inputEl.rows = 6;
+        area.inputEl.rows = 4;
         area
           .setPlaceholder("你是运行在 Obsidian 中的 AI 笔记助手……")
           .setValue(settings.systemPrompt)
@@ -477,9 +502,25 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(this.containerEl)
+    const prompts = settings.quickPrompts;
+    const quickEl = this.createDetails(
+      parentEl,
+      `快捷指令（${prompts.length}）`,
+      false,
+      "pocket-agent-settings-subgroup"
+    );
+    this.renderQuickPromptSection(quickEl);
+
+    const advancedEl = this.createDetails(
+      parentEl,
+      "高级参数",
+      false,
+      "pocket-agent-settings-subgroup"
+    );
+
+    new Setting(advancedEl)
       .setName("温度（temperature）")
-      .setDesc("0-2，数值越低越稳定严谨，越高越发散有创意。常用 0.7。")
+      .setDesc("0-2，越低越稳定，越高越发散；常用 0.7。")
       .addSlider((slider) =>
         slider
           .setLimits(0, 2, 0.1)
@@ -491,9 +532,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(this.containerEl)
+    new Setting(advancedEl)
       .setName("最大回复 token 数")
-      .setDesc("单次回复上限，常用 4096；长文写作可适当调高。")
+      .setDesc("单次回复上限，常用 4096。")
       .addText((text) => {
         text.inputEl.type = "number";
         text
@@ -509,20 +550,16 @@ export class PocketAgentSettingTab extends PluginSettingTab {
       });
   }
 
-  /** 4) 快捷指令 */
-  private renderQuickPromptSection(): void {
+  /** 4) 快捷指令编辑（放在“对话”分组的折叠区中） */
+  private renderQuickPromptSection(parentEl: HTMLElement): void {
     const prompts = this.plugin.settings.quickPrompts;
-    this.addSectionHeading(
-      "快捷指令胶囊",
-      "显示在聊天输入框上方，可在提示词中使用 {{selection}}（选中文本）与 {{note}}（当前笔记）占位符。"
-    );
 
     prompts.forEach((prompt: QuickPrompt, index) => {
-      const card = this.containerEl.createDiv({ cls: "pocket-agent-quick-prompt" });
+      const card = parentEl.createDiv({ cls: "pocket-agent-quick-prompt" });
 
       new Setting(card)
-        .setName(`快捷指令 ${index + 1}`)
-        .setDesc(prompt.label || "未命名按钮")
+        .setName(prompt.label || `快捷指令 ${index + 1}`)
+        .setDesc("{{selection}} 选中文本，{{note}} 当前笔记。")
         .addExtraButton((button) =>
           button
             .setIcon("trash")
@@ -535,35 +572,29 @@ export class PocketAgentSettingTab extends PluginSettingTab {
             })
         );
 
-      new Setting(card)
-        .setName("按钮文字")
-        .setDesc("建议保留一个 emoji 前缀，便于移动端快速识别。")
-        .addText((text) =>
-          text
-            .setPlaceholder("✨ 润色选中")
-            .setValue(prompt.label)
-            .onChange(async (value) => {
-              prompt.label = value;
-              await this.persist();
-            })
-        );
+      new Setting(card).setName("按钮文字").addText((text) =>
+        text
+          .setPlaceholder("✨ 润色选中")
+          .setValue(prompt.label)
+          .onChange(async (value) => {
+            prompt.label = value;
+            await this.persist();
+          })
+      );
 
-      new Setting(card)
-        .setName("提示词模板")
-        .setDesc("支持 {{selection}} 与 {{note}} 占位符。")
-        .addTextArea((area) => {
-          area.inputEl.rows = 3;
-          area
-            .setPlaceholder("请润色下面这段文字……\n\n{{selection}}")
-            .setValue(prompt.prompt)
-            .onChange(async (value) => {
-              prompt.prompt = value;
-              await this.persist();
-            });
-        });
+      new Setting(card).setName("提示词模板").addTextArea((area) => {
+        area.inputEl.rows = 3;
+        area
+          .setPlaceholder("请润色下面这段文字……\n\n{{selection}}")
+          .setValue(prompt.prompt)
+          .onChange(async (value) => {
+            prompt.prompt = value;
+            await this.persist();
+          });
+      });
     });
 
-    new Setting(this.containerEl).addButton((button) =>
+    new Setting(parentEl).addButton((button) =>
       button
         .setButtonText("添加快捷指令")
         .setCta()
@@ -580,14 +611,13 @@ export class PocketAgentSettingTab extends PluginSettingTab {
     );
   }
 
-  /** 5) 会话与 Agent */
-  private renderSessionSection(): void {
+  /** 5) 存储与 Agent */
+  private renderStorageSection(parentEl: HTMLElement): void {
     const settings = this.plugin.settings;
-    this.addSectionHeading("会话与 Agent", "历史记录通过 Vault 适配器读写，不会使用任何 Node.js 文件接口。");
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("会话存储路径")
-      .setDesc("相对笔记库根目录，默认 .obsidian/plugins/pocket-agent/history。")
+      .setDesc("相对笔记库根目录。")
       .addText((text) =>
         text
           .setPlaceholder(".obsidian/plugins/pocket-agent/history")
@@ -598,9 +628,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("存储格式")
-      .setDesc("JSON 便于程序读取；Markdown 会额外导出同名 .md 可读文本。")
+      .setDesc("Markdown 会额外导出同名 .md。")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("json", "JSON 数据")
@@ -612,9 +642,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("最大历史会话数")
-      .setDesc("超出后按更新时间自动清理最旧的会话。")
+      .setDesc("超出后自动清理最旧的会话。")
       .addText((text) => {
         text.inputEl.type = "number";
         text
@@ -629,9 +659,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("默认开启笔记库 Agent 模式")
-      .setDesc("开启后 AI 可搜索、读取笔记，并在你确认差异后写入笔记。")
+      .setDesc("可在聊天窗口随时切换。")
       .addToggle((toggle) =>
         toggle.setValue(settings.agentMode).onChange(async (value) => {
           settings.agentMode = value;
@@ -639,9 +669,9 @@ export class PocketAgentSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(this.containerEl)
+    new Setting(parentEl)
       .setName("默认附带当前笔记")
-      .setDesc("发送消息时自动附带当前激活笔记的标题与内容作为上下文。")
+      .setDesc("发送时附带当前笔记内容。")
       .addToggle((toggle) =>
         toggle.setValue(settings.attachCurrentNote).onChange(async (value) => {
           settings.attachCurrentNote = value;
