@@ -52,7 +52,7 @@ styles.css
 ### DeepSeek / 自定义 OpenAI
 
 - **API Key** 与 **Base URL**（默认 `https://api.deepseek.com/v1`）
-- 默认模型：`deepseek-chat`、`deepseek-reasoner`
+- 默认模型：`deepseek-flash`（DeepSeek V4.1 Flash）、`deepseek-v4-pro`
 
 ### 其他
 

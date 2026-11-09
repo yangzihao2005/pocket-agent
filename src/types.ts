@@ -17,7 +17,7 @@ export type HistoryFormat = "json" | "markdown";
 
 /** 单个模型配置 */
 export interface ModelConfig {
-  /** 模型 ID，例如 deepseek-chat */
+  /** 模型 ID，例如 deepseek-v4.1-flash */
   id: string;
   /** 展示名称 */
   name: string;
@@ -27,6 +27,12 @@ export interface ModelConfig {
   protocol: ProtocolType;
   /** 是否启用 */
   enabled: boolean;
+  /**
+   * 是否允许发送 temperature 参数。
+   * 部分模型（如 Claude Haiku、Kimi K2.7、GPT Luna 系列）会因 temperature 直接返回 400，
+   * 省略该字段时默认视为支持。
+   */
+  supportsTemperature?: boolean;
 }
 
 /** 快捷指令胶囊 */
@@ -74,6 +80,8 @@ export interface PocketAgentSettings {
   attachCurrentNote: boolean;
   /** 单次回复最大 token 数 */
   maxTokens: number;
+  /** 设置结构版本，用于旧版本配置迁移 */
+  schemaVersion?: number;
 }
 
 /** 消息角色 */

@@ -1,4 +1,5 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { fetchProviderModels } from "./api/client";
 import type PocketAgentPlugin from "./main";
 import type {
   HistoryFormat,
@@ -16,20 +17,38 @@ export const DEFAULT_SETTINGS: PocketAgentSettings = {
   opencodeBaseUrl: "https://opencode.ai/zen/go/v1",
   opencodeRequestMode: "requestUrl",
   opencodeModels: [
-    { id: "deepseek-chat", name: "DeepSeek V3 对话", provider: "opencode-go", protocol: "openai-chat", enabled: true },
-    { id: "deepseek-reasoner", name: "DeepSeek R1 推理", provider: "opencode-go", protocol: "openai-chat", enabled: true },
-    { id: "glm-4.6", name: "GLM 4.6 通用", provider: "opencode-go", protocol: "openai-chat", enabled: true },
-    { id: "qwen3-coder", name: "Qwen3 Coder 编程", provider: "opencode-go", protocol: "openai-chat", enabled: true },
-    { id: "kimi-k2", name: "Kimi K2 长文本", provider: "opencode-go", protocol: "openai-chat", enabled: true },
-    { id: "minimax-m2", name: "MiniMax M2 推理", provider: "opencode-go", protocol: "anthropic-messages", enabled: true },
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", provider: "opencode-go", protocol: "openai-chat", enabled: true },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", provider: "opencode-go", protocol: "openai-chat", enabled: true },
+    { id: "glm-5.3-flash", name: "GLM-5.3-Flash", provider: "opencode-go", protocol: "openai-chat", enabled: true },
+    { id: "glm-5.3", name: "GLM-5.3", provider: "opencode-go", protocol: "openai-chat", enabled: true },
+    {
+      id: "kimi-k2.7-code",
+      name: "Kimi K2.7 Code",
+      provider: "opencode-go",
+      protocol: "openai-chat",
+      enabled: true,
+      supportsTemperature: false,
+    },
+    { id: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash", provider: "opencode-go", protocol: "openai-chat", enabled: true },
+    { id: "qwen3.8-flash", name: "Qwen3.8 Flash", provider: "opencode-go", protocol: "anthropic-messages", enabled: true },
+    { id: "qwen3.8-max", name: "Qwen3.8 Max", provider: "opencode-go", protocol: "anthropic-messages", enabled: true },
+    {
+      id: "claude-haiku-5-5",
+      name: "Claude Haiku 5.5",
+      provider: "opencode-go",
+      protocol: "anthropic-messages",
+      enabled: true,
+      supportsTemperature: false,
+    },
+    { id: "grok-4.7", name: "Grok 4.7", provider: "opencode-go", protocol: "openai-responses", enabled: true },
   ],
   deepseekApiKey: "",
   deepseekBaseUrl: "https://api.deepseek.com/v1",
   deepseekModels: [
-    { id: "deepseek-chat", name: "DeepSeek V3 对话", provider: "deepseek", protocol: "openai-chat", enabled: true },
-    { id: "deepseek-reasoner", name: "DeepSeek R1 推理", provider: "deepseek", protocol: "openai-chat", enabled: true },
+    { id: "deepseek-flash", name: "DeepSeek V4.1 Flash", provider: "deepseek", protocol: "openai-chat", enabled: true },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", provider: "deepseek", protocol: "openai-chat", enabled: true },
   ],
-  selectedModelId: "opencode-go:deepseek-chat",
+  selectedModelId: "opencode-go:deepseek-v4.1-flash",
   systemPrompt:
     "你是 PocketAgent，一款运行在 Obsidian 中的 AI 笔记助手。请始终使用简体中文回答，简洁、准确、结构化，优先使用 Markdown（标题、列表、代码块）。当用户附带笔记或选中文本时，请紧扣原文作答，不编造事实；信息不足时明确指出还需要哪些内容。除非用户要求展开，否则保持回答精炼。",
   quickPrompts: [
@@ -71,6 +90,7 @@ export const DEFAULT_SETTINGS: PocketAgentSettings = {
   temperature: 0.7,
   attachCurrentNote: false,
   maxTokens: 4096,
+  schemaVersion: 2,
 };
 
 /** 请求模式取值收敛 */
@@ -139,7 +159,7 @@ export class PocketAgentSettingTab extends PluginSettingTab {
     const settings = this.plugin.settings;
     this.addSectionHeading(
       "OpenCode Go",
-      "OpenCode Go 使用原生 ses_ 会话头，移动端推荐 requestUrl 免跨域直连。"
+      "默认模型已按 2026-11 模型目录更新（deepseek-chat / deepseek-reasoner 等旧模型已于 2026-07-24 下线）。若仍返回 HTTP 400，请点击“获取模型列表”同步服务端最新目录。OpenCode Go 使用原生 ses_ 会话头，移动端推荐 requestUrl 免跨域直连。"
     );
 
     new Setting(this.containerEl)
@@ -193,7 +213,7 @@ export class PocketAgentSettingTab extends PluginSettingTab {
     const settings = this.plugin.settings;
     this.addSectionHeading(
       "DeepSeek / 自定义 OpenAI",
-      "兼容 OpenAI 接口的第三方服务也可填入自定义 Base URL。"
+      "默认 Base URL 保留 /v1 兼容路径（https://api.deepseek.com/v1）；兼容 OpenAI 接口的第三方服务也可填入自定义 Base URL。"
     );
 
     new Setting(this.containerEl)
@@ -265,7 +285,7 @@ export class PocketAgentSettingTab extends PluginSettingTab {
         .setDesc("发送给服务端的 model 字段。")
         .addText((text) =>
           text
-            .setPlaceholder("deepseek-chat")
+            .setPlaceholder("deepseek-v4.1-flash")
             .setValue(model.id)
             .onChange(async (value) => {
               model.id = value.trim();
@@ -278,7 +298,7 @@ export class PocketAgentSettingTab extends PluginSettingTab {
         .setDesc("聊天窗口模型下拉中的展示文字。")
         .addText((text) =>
           text
-            .setPlaceholder("DeepSeek V3 对话")
+            .setPlaceholder("DeepSeek V4.1 Flash")
             .setValue(model.name)
             .onChange(async (value) => {
               model.name = value;
@@ -299,9 +319,22 @@ export class PocketAgentSettingTab extends PluginSettingTab {
             this.display();
           });
         });
+
+      new Setting(card)
+        .setName("发送 temperature")
+        .setDesc("关闭后请求体不携带 temperature；部分 Claude / Kimi / GPT Luna 模型强制要求关闭。")
+        .addToggle((toggle) =>
+          toggle.setValue(model.supportsTemperature !== false).onChange(async (value) => {
+            model.supportsTemperature = value;
+            await this.persist();
+          })
+        );
     });
 
-    new Setting(container).addButton((button) =>
+    const actions = new Setting(container)
+      .setName("模型列表操作")
+      .setDesc("可从服务端同步模型目录，或一键恢复推荐的默认模型列表。");
+    actions.addButton((button) =>
       button
         .setButtonText("添加模型")
         .setCta()
@@ -317,6 +350,85 @@ export class PocketAgentSettingTab extends PluginSettingTab {
           this.display();
         })
     );
+    actions.addButton((button) =>
+      button
+        .setButtonText("获取模型列表")
+        .setTooltip("从当前服务商的 /models 接口同步最新模型")
+        .onClick(async () => {
+          await this.syncModelsFromProvider(provider);
+        })
+    );
+    actions.addButton((button) =>
+      button
+        .setButtonText("恢复推荐模型")
+        .setWarning()
+        .setTooltip("用内置推荐列表替换当前服务商的模型列表")
+        .onClick(async () => {
+          await this.restoreRecommendedModels(provider);
+        })
+    );
+  }
+
+  /** 当前 provider 对应的模型列表 */
+  private getProviderModels(provider: ProviderId): ModelConfig[] {
+    return provider === "opencode-go" ? this.plugin.settings.opencodeModels : this.plugin.settings.deepseekModels;
+  }
+
+  /** 从服务商 /models 接口同步模型目录，仅追加尚不存在的条目 */
+  private async syncModelsFromProvider(provider: ProviderId): Promise<void> {
+    const settings = this.plugin.settings;
+    const baseUrl = provider === "opencode-go" ? settings.opencodeBaseUrl : settings.deepseekBaseUrl;
+    const apiKey = provider === "opencode-go" ? settings.opencodeApiKey : settings.deepseekApiKey;
+
+    try {
+      const remoteModels = await fetchProviderModels({ provider, baseUrl, apiKey });
+      const models = this.getProviderModels(provider);
+      const existingIds = new Set(models.map((model) => model.id.trim()));
+
+      let added = 0;
+      for (const remote of remoteModels) {
+        const id = remote.id.trim();
+        if (!id || existingIds.has(id)) continue;
+        existingIds.add(id);
+        models.push({
+          id,
+          name: remote.name || id,
+          provider,
+          protocol: remote.protocol,
+          enabled: false,
+          ...(remote.supportsTemperature ? {} : { supportsTemperature: false }),
+        });
+        added += 1;
+      }
+
+      await this.persist();
+      new Notice(
+        added > 0
+          ? `新增 ${added} 个模型（默认停用，可在列表中按需启用），当前共 ${models.length} 个`
+          : "模型列表已是最新"
+      );
+      this.display();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`获取模型列表失败：${message}`);
+    }
+  }
+
+  /** 用内置推荐列表替换当前 provider 的模型列表 */
+  private async restoreRecommendedModels(provider: ProviderId): Promise<void> {
+    const recommended = (
+      provider === "opencode-go" ? DEFAULT_SETTINGS.opencodeModels : DEFAULT_SETTINGS.deepseekModels
+    ).map((model) => ({ ...model }));
+
+    if (provider === "opencode-go") {
+      this.plugin.settings.opencodeModels = recommended;
+    } else {
+      this.plugin.settings.deepseekModels = recommended;
+    }
+
+    new Notice("已恢复推荐模型列表");
+    await this.persist();
+    this.display();
   }
 
   /** 3) 模型与提示词 */

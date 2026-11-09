@@ -30,6 +30,24 @@ export interface HistoryStore {
 const FALLBACK_HISTORY_FOLDER = ".obsidian/plugins/pocket-agent/history";
 /** 默认最多保留会话数 */
 const FALLBACK_MAX_SESSIONS = 50;
+/** 当前设置结构版本 */
+const SETTINGS_SCHEMA_VERSION = 2;
+/** 2026-07-24 前下线的旧默认模型 ID */
+const LEGACY_MODEL_IDS = new Set([
+  "deepseek-chat",
+  "deepseek-reasoner",
+  "glm-4.6",
+  "qwen3-coder",
+  "kimi-k2",
+  "minimax-m2",
+]);
+/** 指向已下线模型的旧默认选择 */
+const LEGACY_SELECTED_MODEL_IDS = new Set([
+  "opencode-go:deepseek-chat",
+  "opencode-go:deepseek-reasoner",
+  "deepseek:deepseek-chat",
+  "deepseek:deepseek-reasoner",
+]);
 /** 合法会话 ID：只允许安全字符，防止路径穿越 */
 const SAFE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 /** 消息角色中文标题 */
@@ -342,6 +360,51 @@ export default class PocketAgentPlugin extends Plugin {
         ? merged.quickPrompts.map((prompt) => ({ ...prompt }))
         : DEFAULT_SETTINGS.quickPrompts.map((prompt) => ({ ...prompt })),
     };
+
+    await this.migrateSettings(stored);
+  }
+
+  /**
+   * 旧版本配置迁移（schemaVersion < 2）。
+   * 仅当模型列表全部为旧默认模型时才整体替换，避免覆盖用户自定义模型。
+   * 即使没有发生替换也会写入新的 schemaVersion，防止重复迁移。
+   */
+  private async migrateSettings(stored: Partial<PocketAgentSettings> | null): Promise<void> {
+    const storedVersion = typeof stored?.schemaVersion === "number" ? stored.schemaVersion : 0;
+    if (storedVersion >= SETTINGS_SCHEMA_VERSION) return;
+
+    const opencodeModels = this.settings.opencodeModels ?? [];
+    if (
+      opencodeModels.length > 0 &&
+      opencodeModels.every((model) => LEGACY_MODEL_IDS.has(model.id))
+    ) {
+      this.settings.opencodeModels = DEFAULT_SETTINGS.opencodeModels.map((model) => ({ ...model }));
+    }
+
+    const deepseekModels = this.settings.deepseekModels ?? [];
+    if (
+      deepseekModels.length > 0 &&
+      deepseekModels.every((model) => LEGACY_MODEL_IDS.has(model.id))
+    ) {
+      this.settings.deepseekModels = DEFAULT_SETTINGS.deepseekModels.map((model) => ({ ...model }));
+    }
+
+    if (LEGACY_SELECTED_MODEL_IDS.has(this.settings.selectedModelId)) {
+      const wasDeepSeek = this.settings.selectedModelId.startsWith("deepseek:");
+      const candidate = wasDeepSeek
+        ? this.settings.deepseekModels.find((model) => model.id === "deepseek-flash" && model.enabled) ??
+          this.settings.deepseekModels.find((model) => model.enabled)
+        : this.settings.opencodeModels.find((model) => model.id === "deepseek-v4.1-flash" && model.enabled) ??
+          this.settings.opencodeModels.find((model) => model.enabled);
+      if (candidate) {
+        this.settings.selectedModelId = `${candidate.provider}:${candidate.id}`;
+      } else {
+        this.settings.selectedModelId = DEFAULT_SETTINGS.selectedModelId;
+      }
+    }
+
+    this.settings.schemaVersion = SETTINGS_SCHEMA_VERSION;
+    await this.saveData(this.settings);
   }
 
   /** 合并默认设置并落盘 */

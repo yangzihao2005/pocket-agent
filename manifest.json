@@ -1,7 +1,7 @@
 {
   "id": "pocket-agent",
   "name": "PocketAgent - 移动端 AI 与 OpenCode Go 助手",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.8.0",
   "description": "移动端优先的 AI 对话与笔记库 Agent 插件，原生支持 OpenCode Go、DeepSeek 及标准 OpenAI 接口。",
   "author": "PocketAgent",

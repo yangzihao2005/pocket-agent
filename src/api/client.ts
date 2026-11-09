@@ -5,6 +5,7 @@ import type {
   CompletionResult,
   ModelConfig,
   ProtocolType,
+  ProviderId,
   ToolCall,
   ToolDefinition,
 } from "../types";
@@ -252,11 +253,13 @@ function toResponsesInput(messages: ChatMessage[]): unknown[] {
 /** 构造请求体 */
 function buildBody(req: CompletionRequest, stream: boolean): unknown {
   const protocol = req.model.protocol;
+  const temperature = req.model.supportsTemperature === false ? {} : { temperature: req.temperature };
+
   if (protocol === "anthropic-messages") {
     return {
       model: req.model.id,
       max_tokens: Math.max(1, req.maxTokens),
-      temperature: req.temperature,
+      ...temperature,
       ...(req.systemPrompt.trim() ? { system: req.systemPrompt } : {}),
       messages: toAnthropicMessages(req.messages),
       ...(req.tools?.length ? { tools: toAnthropicTools(req.tools) } : {}),
@@ -269,7 +272,7 @@ function buildBody(req: CompletionRequest, stream: boolean): unknown {
       model: req.model.id,
       input: toResponsesInput(req.messages),
       ...(req.systemPrompt.trim() ? { instructions: req.systemPrompt } : {}),
-      temperature: req.temperature,
+      ...temperature,
       max_output_tokens: Math.max(1, req.maxTokens),
       ...(req.tools?.length ? { tools: toResponsesTools(req.tools), tool_choice: "auto" } : {}),
       ...(stream ? { stream: true } : {}),
@@ -279,7 +282,7 @@ function buildBody(req: CompletionRequest, stream: boolean): unknown {
   return {
     model: req.model.id,
     messages: toOpenAIMessages(req.messages, req.systemPrompt),
-    temperature: req.temperature,
+    ...temperature,
     max_tokens: Math.max(1, req.maxTokens),
     ...(req.tools?.length ? { tools: req.tools, tool_choice: "auto" } : {}),
     ...(stream ? { stream: true } : {}),
@@ -368,6 +371,32 @@ export function parseCompletionResponse(protocol: ProtocolType, data: unknown): 
   return { content, toolCalls, raw: data };
 }
 
+/** 解析服务端错误响应，尽量把原始 message 暴露给用户 */
+export function describeApiFailure(status: number, rawBody: string): string {
+  const raw = (rawBody || "").trim();
+  let detail = "";
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const envelope =
+      parsed && typeof parsed.error === "object" && parsed.error !== null
+        ? (parsed.error as Record<string, unknown>)
+        : parsed;
+    if (typeof parsed.error === "string") {
+      detail = parsed.error;
+    } else if (envelope && typeof envelope === "object") {
+      const parts = [envelope.message, envelope.type, envelope.param, envelope.code]
+        .filter((part): part is string => typeof part === "string" && part.length > 0)
+        .filter((part, index, all) => all.indexOf(part) === index);
+      detail = parts.join(" · ");
+    }
+  } catch {
+    detail = raw;
+  }
+  if (!detail) detail = raw;
+  const clipped = detail.replace(/\s+/g, " ").trim().slice(0, 600);
+  return `请求失败（HTTP ${status}）${clipped ? `：${clipped}` : ""}`;
+}
+
 /** 通过 Obsidian requestUrl 发起非流式请求（免 CORS，移动端默认） */
 async function completeWithRequestUrl(req: CompletionRequest): Promise<CompletionResult> {
   const url = resolveEndpoint(req.baseUrl, req.model.protocol);
@@ -383,7 +412,7 @@ async function completeWithRequestUrl(req: CompletionRequest): Promise<Completio
   });
 
   if (response.status < 200 || response.status >= 300) {
-    throw new PocketAgentApiError(`请求失败（HTTP ${response.status}）`, {
+    throw new PocketAgentApiError(describeApiFailure(response.status, response.text), {
       status: response.status,
       body: response.text,
       fallbackAllowed: false,
@@ -626,7 +655,7 @@ async function completeWithFetch(req: CompletionRequest, stream: boolean): Promi
     } catch {
       /* noop */
     }
-    throw new PocketAgentApiError(`请求失败（HTTP ${response.status}）${text ? `：${text.slice(0, 500)}` : ""}`, {
+    throw new PocketAgentApiError(describeApiFailure(response.status, text), {
       status: response.status,
       body: text,
       fallbackAllowed: false,
@@ -684,8 +713,7 @@ export class PocketAgentClient {
   }
 }
 
-/** 获取模型对应的 API Key 与 Base URL（供 UI 调用） */
-export function resolveProviderCredentials(
+/** 获取模型对应的 API Key 与 Base URL（供 UI 调用） */export function resolveProviderCredentials(
   model: ModelConfig,
   settings: {
     opencodeApiKey: string;
@@ -706,4 +734,156 @@ export function resolveRequestMode(
   settings: { opencodeRequestMode: "requestUrl" | "fetch" }
 ): "requestUrl" | "fetch" {
   return model.provider === "opencode-go" ? settings.opencodeRequestMode : "fetch";
+}
+
+/** `/models` 返回的模型信息 */
+export interface RemoteModelInfo {
+  id: string;
+  name: string;
+  protocol: ProtocolType;
+  supportsTemperature: boolean;
+}
+
+/** 已知拒绝 temperature 参数的模型 */
+const NO_TEMPERATURE_MODEL_IDS = new Set([
+  "claude-haiku-5-5",
+  "kimi-k3",
+  "kimi-k3.1-pro",
+  "kimi-k2.7-code",
+  "gpt-5.6-luna",
+  "gpt-6-luna",
+  "gemini-4-argon",
+]);
+
+/** 根据模型 ID 推断协议（仅用于自动补全，用户可在设置页修改） */
+export function inferProtocolFromId(id: string, provider: ProviderId): ProtocolType {
+  if (provider === "deepseek") return "openai-chat";
+  if (id === "minimax-m3" || id.startsWith("claude-") || id.startsWith("qwen3.7") || id.startsWith("qwen3.8")) {
+    return "anthropic-messages";
+  }
+  if (
+    id.startsWith("gpt-5") ||
+    id.startsWith("gpt-6") ||
+    id.startsWith("grok-") ||
+    id.startsWith("muse-spark") ||
+    id.startsWith("crouton-")
+  ) {
+    return "openai-responses";
+  }
+  return "openai-chat";
+}
+
+/** 把模型 ID 转成可读名称 */
+function prettifyModelName(id: string): string {
+  return id
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => (part.length <= 2 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(" ");
+}
+
+/** 从 /models 响应中读取协议（如果服务端提供了元数据） */
+function readProtocolHint(item: Record<string, unknown>): ProtocolType | null {
+  const candidates = [item.protocol, item.api, item.type].filter((value): value is string => typeof value === "string");
+  for (const value of candidates) {
+    const lower = value.toLowerCase();
+    if (lower.includes("anthropic")) return "anthropic-messages";
+    if (lower.includes("responses")) return "openai-responses";
+    if (lower.includes("chat")) return "openai-chat";
+  }
+  return null;
+}
+
+/**
+ * 通过 GET {baseUrl}/models 获取服务商当前可用的模型列表。
+ * OpenCode Go 的 /models 是公开接口，但仍会带上 API Key 与会话头。
+ */
+export async function fetchProviderModels(options: {
+  provider: ProviderId;
+  baseUrl: string;
+  apiKey: string;
+  sessionId?: string;
+}): Promise<RemoteModelInfo[]> {
+  const base = (options.baseUrl || "").trim().replace(/\/+$/, "");
+  if (!base) throw new PocketAgentApiError("尚未配置 Base URL。");
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (options.apiKey) headers["Authorization"] = `Bearer ${options.apiKey}`;
+  if (options.provider === "opencode-go") {
+    headers["x-opencode-session"] = options.sessionId || generateOpenCodeSessionId();
+    headers["User-Agent"] = POCKET_AGENT_USER_AGENT;
+  }
+
+  const response = await requestUrl({
+    url: `${base}/models`,
+    method: "GET",
+    headers,
+    throw: false,
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new PocketAgentApiError(describeApiFailure(response.status, response.text), {
+      status: response.status,
+      body: response.text,
+    });
+  }
+
+  let data: unknown;
+  try {
+    data = response.json;
+  } catch {
+    data = JSON.parse(response.text);
+  }
+
+  const root = (data ?? {}) as Record<string, unknown>;
+  const rawList = Array.isArray(root.data)
+    ? (root.data as unknown[])
+    : Array.isArray(root.models)
+      ? (root.models as unknown[])
+      : Array.isArray(data)
+        ? (data as unknown[])
+        : [];
+
+  const models: RemoteModelInfo[] = [];
+  for (const entry of rawList) {
+    if (typeof entry === "string") {
+      models.push({
+        id: entry,
+        name: prettifyModelName(entry),
+        protocol: inferProtocolFromId(entry, options.provider),
+        supportsTemperature: !NO_TEMPERATURE_MODEL_IDS.has(entry),
+      });
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+    const id = typeof item.id === "string" ? item.id : typeof item.name === "string" ? item.name : "";
+    if (!id) continue;
+
+    const displayName =
+      (typeof item.display_name === "string" && item.display_name) ||
+      (typeof item.displayName === "string" && item.displayName) ||
+      prettifyModelName(id);
+
+    const capabilities =
+      item.capabilities && typeof item.capabilities === "object"
+        ? (item.capabilities as Record<string, unknown>)
+        : {};
+
+    const supportsTemperature =
+      !NO_TEMPERATURE_MODEL_IDS.has(id) &&
+      item.temperature !== false &&
+      item.supports_temperature !== false &&
+      capabilities.temperature !== false;
+
+    models.push({
+      id,
+      name: displayName,
+      protocol: readProtocolHint(item) ?? inferProtocolFromId(id, options.provider),
+      supportsTemperature,
+    });
+  }
+
+  models.sort((a, b) => a.id.localeCompare(b.id));
+  return models;
 }
