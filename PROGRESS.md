@@ -1,18 +1,15 @@
 # PROGRESS.md
 
 ## 当前状态
-- [x] 按 SPEC.md 完成插件源码与构建产物
-- [x] 已调整为可上架状态（合规 id + README/LICENSE/versions.json）
+- [x] 1.0.3：聊天 UI 极简化、设置页折叠分组、PDF 选区引用
+- [x] 已发布到 GitHub Release，待平板验证
 
 ## 进展记录
 
 ### 2026-11-09
-- 完成根配置：`manifest.json`（`isDesktopOnly: false`）、`package.json`、`tsconfig.json`、`esbuild.config.mjs`
-- 完成核心层：`src/types.ts`、`src/api/session.ts`、`src/api/client.ts`、`src/agent/vaultTools.ts`
-- 完成入口与设置：`src/main.ts`、`src/settings.ts`
-- 完成 UI：`src/ui/ChatView.ts`、`src/ui/DiffModal.ts`、`styles.css`
-- 验证：`npx tsc --noEmit --skipLibCheck` 通过；`npm run build` 生成 `main.js`（约 74 KB）
-- 冒烟测试：`ses_[0-9a-f]{32}` 生成/校验/会话粘性/重置均符合预期
-- 已验证源码与产物中不含 `fs`/`path`/`crypto` 等 Node.js 原生依赖
-- 上架准备：id 改为 `pocket-agent`（原 spec 的 id 含 `obsidian` 会被官方拒绝），默认历史目录与 User-Agent 同步更新；新增 `README.md`、`LICENSE`、`versions.json`、`.gitignore`
-- 下一步：GitHub 打 `1.0.0` Release（附 `main.js`/`manifest.json`/`styles.css`）→ 平板用 BRAT 自测 → 在 community.obsidian.md 提交
+- 1.0.0：完成 SPEC 全部模块，构建通过
+- 1.0.1：更新 2026-11 模型目录、400 错误显示服务端原文、修复 temperature 兼容、设置页支持同步/恢复模型、旧配置迁移
+- 1.0.2（已撤回）：聊天 UI 重构与设置折叠分组，但样式文件合并时被误覆盖
+- 1.0.3：恢复完整 styles.css；单行顶栏 + ⋯ 菜单、快捷指令折叠、图标化操作栏；设置页 4 个折叠分组；PDF 阅读器选中文字可直接引用
+- 验证：`tsc` 0 错误、`npm run build` 通过、Release 资产与本地文件哈希一致
+- 下一步：平板安装 1.0.3，验证聊天、PDF 选区与设置页
